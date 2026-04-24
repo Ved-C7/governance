@@ -30,7 +30,7 @@ pragma solidity 0.8.16;
 import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 
 contract ProxyUpgradeAction {
-    // SLIDE 05 + 07 — Steps 01 and 04: admin is the ProxyAdmin that owns the proxy, target
+    // SLIDE 05 + 07, Steps 01 and 04: admin is the ProxyAdmin that owns the proxy, target
     // is the proxy being upgraded, and newLogic is the new implementation to point it at.
     // In the Kelp rescue, calling this with a temp implementation installed the custom logic
     // that could impersonate the attacker and move the funds. Calling it again with the

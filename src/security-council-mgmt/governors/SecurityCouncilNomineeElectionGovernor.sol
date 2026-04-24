@@ -4,7 +4,7 @@ pragma solidity 0.8.16;
 /*
  * ============================================================
  * ANNOTATED IMPLEMENTATION WALKTHROUGH
- * Presentation: "The Governance Handbrake" — Security Councils
+ * Presentation: "The Governance Handbrake" - Security Councils
  * Slides 03 and 08
  * ============================================================
  *
@@ -197,7 +197,7 @@ contract SecurityCouncilNomineeElectionGovernor is
     // SLIDE 03, Elected committee: Anyone can call this once the 6-month window opens.
     // The election schedule is calculated deterministically from the election count, so
     // no single party can delay or suppress it by simply not acting. The "elected" part
-    // of Slide 03's description depends on this being permissionless — if only the
+    // of Slide 03's description depends on this being permissionless. If only the
     // Foundation or the council could start elections, the rotation guarantee would break.
     /// @notice Creates a new nominee election proposal.
     ///         Can be called by anyone every 6 months.
