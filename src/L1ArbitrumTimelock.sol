@@ -1,6 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.16;
 
+/*
+ * ============================================================
+ * ANNOTATED IMPLEMENTATION WALKTHROUGH
+ * Presentation: "The Governance Handbrake" - Security Councils
+ * Slides 04 and 07
+ * ============================================================
+ *
+ * The Arbitrum DAO lives on L2 but the actual rollup infrastructure (the bridge,
+ * the inbox, the sequencer) all live on Ethereum L1. This means that any proposal
+ * that needs to change something on L1 has to cross the bridge first. This contract
+ * is where those cross-chain proposals land on L1.
+ *
+ * It only accepts messages from the L2 governance timelock, verified through the bridge.
+ * Once a message arrives, it either executes the action directly on L1 or routes it
+ * to another L2 chain by creating a retryable ticket through the bridge inbox.
+ *
+ * The Kelp DAO rescue from Slides 06 and 07 went through this contract. The Security
+ * Council collected 9 Gnosis Safe signatures, bypassed the DAO vote entirely, and
+ * called execute here. All four steps of the rescue (upgrading the inbox, impersonating
+ * the attacker, transferring the ETH, and restoring the original inbox) were bundled
+ * into one atomic transaction routed through the _execute function below. The actual
+ * Inbox proxy being upgraded lives in the external nitro-contracts repo, but this
+ * contract is what dispatched the payload to it.
+ * ============================================================
+ */
+
 import "@arbitrum/nitro-contracts/src/bridge/IInbox.sol";
 import "./L1ArbitrumMessenger.sol";
 import "./ArbitrumTimelock.sol";
@@ -18,6 +44,11 @@ interface IInboxSubmissionFee {
 ///        no new behaviour has been given to the PROPOSER role, as this is assigned to the bridge
 ///        and any new behaviour should be overriden to also include the 'onlyCounterpartTimelock' modifier check
 contract L1ArbitrumTimelock is ArbitrumTimelock, L1ArbitrumMessenger {
+    // SLIDE 07, Step 01 (inbox.upgradeTo): When a proposal sets its target to this special
+    // address instead of a real contract, the _execute function below knows to treat the
+    // calldata as a bridge message rather than a direct L1 call. This is how the Kelp rescue
+    // worked. The council's payload targeted this magic address, which told the timelock to
+    // package everything as a retryable ticket and send it through the Arbitrum bridge inbox.
     /// @notice The magic address to be used when a retryable ticket is to be created
     /// @dev When the target of an proposal is this magic value then the proposal
     ///      will be formed into a retryable ticket and posted to an inbox provided in
@@ -66,6 +97,11 @@ contract L1ArbitrumTimelock is ArbitrumTimelock, L1ArbitrumMessenger {
         grantRole(PROPOSER_ROLE, bridge);
     }
 
+    // SLIDE 04: This modifier enforces that only the L2 governance system can trigger actions
+    // on L1. It checks two things. First that the message came through the correct Arbitrum
+    // bridge, and second that the L2 sender was specifically the L2 timelock. Both checks
+    // have to pass. This means no one sitting on L1 can bypass L2 governance and sneak a
+    // proposal through. The trust chain runs in one direction only.
     modifier onlyCounterpartTimelock() {
         // this bridge == msg.sender check is redundant in all the places that
         // we currently use this modifier since we call a function on super
@@ -119,6 +155,12 @@ contract L1ArbitrumTimelock is ArbitrumTimelock, L1ArbitrumMessenger {
         TimelockControllerUpgradeable.schedule(target, value, data, predecessor, salt, delay);
     }
 
+    // SLIDE 07, All Four Steps: This is the execution engine behind the Kelp rescue. When
+    // the Security Council's nine signatures fired the transaction, it ended up here. Because
+    // the target was the RETRYABLE_TICKET_MAGIC address, all four steps from Slide 07
+    // (upgrading the inbox, impersonating the attacker, transferring 30,766 ETH, and restoring
+    // the original inbox) were packed into one retryable ticket payload and dispatched in a
+    // single block. The attacker had no window to react because there was no gap between steps.
     /// @dev If the target is reserved "magic" retryable ticket address address(bytes20(bytes("retryable ticket magic")))
     /// we create a retryable ticket at provided inbox; otherwise, we execute directly
     function _execute(address target, uint256 value, bytes calldata data)

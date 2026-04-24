@@ -1,6 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.16;
 
+/*
+ * ============================================================
+ * ANNOTATED IMPLEMENTATION WALKTHROUGH
+ * Presentation: "The Governance Handbrake" - Security Councils
+ * Slides 04, 05, and 07
+ * ============================================================
+ *
+ * This contract builds the calldata that gets a governance decision from L2 to wherever
+ * it actually needs to execute. A proposal might need to change something on L1, or on
+ * a different L2 chain entirely. This contract figures out the right path and encodes
+ * all the nested calls needed to get there.
+ *
+ * For L1 targets the path is: L2 governor calls ArbSys which sends a message to the
+ * L1 timelock, which calls the UpgradeExecutor, which runs the action contract. For
+ * targets on other L2 chains there is one extra hop through the bridge inbox. Both
+ * paths end at an UpgradeExecutor that holds the admin authority to run the action.
+ *
+ * One important thing about Slide 04: the Security Council does not use this builder
+ * when it acts in an emergency. The council collects nine Gnosis Safe signatures and
+ * calls the UpgradeExecutor directly and skips the timelock entirely. This contract is
+ * for the standard DAO route and for scheduled membership updates. It is not for the
+ * less-than-one-hour emergency path.
+ *
+ * The Kelp DAO rescue from Slide 07 used the same retryable ticket pattern that this
+ * builder encodes for L2-chain targets. The payload that contained all four steps
+ * (upgrade inbox, impersonate attacker, transfer ETH, restore inbox) was dispatched
+ * through L1ArbitrumTimelock._execute() using the RETRYABLE_TICKET_MAGIC address.
+ * ============================================================
+ */
+
 import "@arbitrum/nitro-contracts/src/precompiles/ArbSys.sol";
 import "@offchainlabs/upgrade-executor/src/IUpgradeExecutor.sol";
 import "./L1ArbitrumTimelock.sol";
@@ -43,6 +73,12 @@ contract UpgradeExecRouteBuilder {
     error EmptyActionBytesData(bytes[]);
     error InvalidActionType(uint256 actionType);
 
+    // SLIDE 07, Step 01: When a proposal uses this address as its target instead of a real
+    // contract, the L1 timelock knows to send the payload through the bridge as a retryable
+    // ticket rather than executing it locally. This is how a single L1 transaction can trigger
+    // an upgrade on any connected chain. In the Kelp rescue, the council's transaction
+    // targeted this address, which told the timelock to route the inbox upgrade payload
+    // through the bridge instead of running it on L1.
     /// @notice The magic value used by the L1 timelock to indicate that a retryable ticket should be created
     ///         See L1ArbitrumTimelock for more details
     address public constant RETRYABLE_TICKET_MAGIC = 0xa723C008e76E379c55599D2E4d93879BeaFDa79C;
@@ -56,6 +92,11 @@ contract UpgradeExecRouteBuilder {
 
     /// @notice Address of the L1 timelock targeted by this route builder
     address public immutable l1TimelockAddr;
+    // SLIDE 04, "TIME TO ACT: 7 days": This stores the L1 timelock's minimum delay at
+    // deploy time. Every standard DAO proposal that crosses to L1 waits at least this long.
+    // Because it is immutable, if the L1 timelock's delay ever changes, a new RouteBuilder
+    // has to be deployed and governance has to approve the swap. That friction is intentional
+    // and it prevents the delay from being quietly compressed without anyone noticing.
     /// @notice The minimum delay of the L1 timelock targeted by this route builder
     /// @dev    If the min delay for this timelock changes then a new route builder will need to be deployed
     uint256 public immutable l1TimelockMinDelay;
@@ -154,6 +195,12 @@ contract UpgradeExecRouteBuilder {
                 revert InvalidActionType(actionTypes[i]);
             }
 
+            // SLIDE 05 + 07: If the inbox is address(0), the UpgradeExecutor is on L1 and
+            // the call goes there directly. If the inbox is set to something, the executor
+            // is on a different L2, so the call gets wrapped in RETRYABLE_TICKET_MAGIC and
+            // sent through the bridge. The Kelp rescue used this second path. The council
+            // needed to reach the nitro-contracts Inbox proxy through this routing logic
+            // to dispatch the four-step recovery transaction.
             // for L1, inbox is set to address(0):
             if (upExecLocation.inbox == address(0)) {
                 schedTargets[i] = upExecLocation.upgradeExecutor;

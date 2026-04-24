@@ -1,6 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.16;
 
+/*
+ * ============================================================
+ * ANNOTATED IMPLEMENTATION WALKTHROUGH
+ * Presentation: "The Governance Handbrake" - Security Councils
+ * Slides 03, 04, and 08
+ * ============================================================
+ *
+ * This contract is the source of truth for who is actually on the Security Council.
+ * Slide 03 describes the council as a small elected committee with super-admin keys.
+ * This contract is where those members are tracked on-chain, and it is responsible for
+ * pushing any membership change to every Gnosis Safe on every supported chain.
+ *
+ * The 12 members are split into two cohorts of 6. Elections replace one cohort every
+ * 6 months in a staggered schedule, so the council never goes entirely new at once.
+ * The combined first and second cohort always equals the 12 owners of the Gnosis Safe,
+ * which is the "12" in the 9-of-12 threshold from Slide 03.
+ *
+ * Something important about Slide 04: membership changes go through the standard
+ * timelock, not the emergency bypass. When an election finishes, the new member list
+ * travels through ArbitrumTimelock, across the bridge to L1, through the UpgradeExecutors,
+ * and finally into SecurityCouncilMemberSyncAction on each chain. That process takes days.
+ * Only the council's emergency actions (pause, upgrade, arbitrary transaction) skip
+ * the delay. Membership itself does not.
+ *
+ * Slide 08 points out the key compromise risk. The role constants below determine who
+ * can change the member list. If someone got hold of the COHORT_REPLACER_ROLE they could
+ * swap in six addresses they control, effectively owning a majority of the Gnosis Safe.
+ * That is why these roles are assigned only to the election governor contracts and not
+ * to any individual wallet.
+ * ============================================================
+ */
+
 import "../ArbitrumTimelock.sol";
 import "@offchainlabs/upgrade-executor/src/UpgradeExecutor.sol";
 import "../L1ArbitrumTimelock.sol";
@@ -47,6 +79,10 @@ contract SecurityCouncilManager is
     );
     event UpgradeExecRouteBuilderSet(address indexed UpgradeExecRouteBuilder);
 
+    // SLIDE 03, "9 of 12": These two arrays together always equal the 12 Gnosis Safe owners.
+    // Elections replace one cohort at a time so the council is never entirely unfamiliar with
+    // the protocol. The 9-of-12 signing threshold lives on the Safe itself and is preserved
+    // automatically every time SecurityCouncilMemberSyncAction syncs a new member list in.
     // The Security Council members are separated into two cohorts, allowing a whole cohort to be replaced, as
     // specified by the Arbitrum Constitution.
     // These two cohort arrays contain the source of truth for the members of the Security Council. When a membership
@@ -80,6 +116,13 @@ contract SecurityCouncilManager is
     ///         Value is defined in L1ArbitrumTimelock contract https://etherscan.io/address/0xE6841D92B0C345144506576eC13ECf5103aC7f49#readProxyContract#F5
     address public constant RETRYABLE_TICKET_MAGIC = 0xa723C008e76E379c55599D2E4d93879BeaFDa79C;
 
+    // SLIDE 08, Key compromise honeypot: Each of these roles is granted to a specific
+    // governor contract, not a human key. COHORT_REPLACER_ROLE goes to the member election
+    // governor, MEMBER_REMOVER_ROLE goes to the removal governor, and MEMBER_ROTATOR_ROLE
+    // goes to the council itself for key rotations. The reason this matters is that Slide 08
+    // already identifies the 12 council signers as a high-value target. If any one of these
+    // roles lived in a human wallet instead of a governor contract, an attacker who got that
+    // key could quietly install six addresses they control and effectively own the protocol.
     bytes32 public constant COHORT_REPLACER_ROLE = keccak256("COHORT_REPLACER");
     bytes32 public constant MEMBER_ADDER_ROLE = keccak256("MEMBER_ADDER");
     bytes32 public constant MEMBER_REPLACER_ROLE = keccak256("MEMBER_REPLACER");
@@ -124,6 +167,12 @@ contract SecurityCouncilManager is
         }
     }
 
+    // SLIDE 03, Election cycle: This gets called when an election finishes and produces a
+    // new cohort. It wipes the old six members and writes in the new ones, then calls
+    // _scheduleUpdate() to push those changes to every Gnosis Safe on every chain. The Safe
+    // itself gets updated asynchronously through the retryable ticket path, which is why
+    // there is a brief lag between when this runs and when the Safe actually reflects the
+    // new member list.
     /// @inheritdoc ISecurityCouncilManager
     function replaceCohort(address[] memory _newCohort, Cohort _cohort)
         external
@@ -419,6 +468,13 @@ contract SecurityCouncilManager is
         return (newMembers, to, data);
     }
 
+    // SLIDE 04, Standard DAO Route for membership updates: Even though the Security Council
+    // holds emergency keys, changes to who is on the council still go through the standard
+    // timelock delay. This function builds the full message chain: new member list, unique
+    // salt for replay protection, and a call through ArbSys to the L1 timelock, which then
+    // reaches the UpgradeExecutors on each chain. The delay is the full minDelay, not zero.
+    // That is intentional. It gives the community a window to notice if someone with a
+    // compromised role is trying to slip in malicious signers.
     /// @dev Create a union of the second and first cohort, then update all Security Councils under management with that unioned array.
     ///      Updates will need to be scheduled through timelocks and target upgrade executors
     function _scheduleUpdate() internal {

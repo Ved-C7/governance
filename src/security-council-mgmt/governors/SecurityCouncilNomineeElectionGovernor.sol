@@ -1,6 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.16;
 
+/*
+ * ============================================================
+ * ANNOTATED IMPLEMENTATION WALKTHROUGH
+ * Presentation: "The Governance Handbrake" — Security Councils
+ * Slides 03 and 08
+ * ============================================================
+ *
+ * Slide 03 calls the Security Council a "small, elected committee." This contract is
+ * Phase 1 of that election which is the Nominee Election. It determines which candidates get
+ * enough community support to advance to the final vote.
+ *
+ * The election runs in two phases. In Phase 1, anyone who wants to be on the council
+ * submits an EIP-712 signature to register as a contender. ARB token holders then vote,
+ * and the top vote-getters become nominees. After voting closes, the Arbitrum Foundation
+ * reviews the nominee list and can remove anyone who is non-compliant. If fewer than the
+ * required number of nominees make it through, the Foundation can add alternatives.
+ * Phase 2 then narrows the nominees down to exactly the cohort size through another vote.
+ *
+ * All three vulnerability categories from Slide 08 show up in this contract. The subpoena
+ * and coercion risk is the nomineeVetter. The Arbitrum Foundation is a real legal entity
+ * that a government could pressure to block or include specific candidates regardless of
+ * how the community voted. The key compromise risk is addContender's EIP-712 requirement,
+ * which forces council members to be real individuals with private keys they control
+ * directly which is exactly what makes them high-value targets. And the decentralization
+ * theater risk is the election blocking mechanism. If the previous election gets stuck,
+ * no new election can start, which means the current council stays in place indefinitely
+ * and the community has no way to rotate them out without the council's own cooperation.
+ * ============================================================
+ */
+
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorSettingsUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -58,6 +88,12 @@ contract SecurityCouncilNomineeElectionGovernor is
         uint256 excludedNomineeCount;
     }
 
+    // SLIDE 08, Subpoena and coercion: The nomineeVetter is the Arbitrum Foundation. It can
+    // call excludeNominee() to block any candidate who won a community vote, and it can call
+    // includeNominee() to force in a Foundation-chosen candidate if not enough nominees make
+    // it through. This exists as a compliance and safety valve, but it also means a single
+    // known organization can override what token holders decided. If a regulator pressured
+    // the Foundation, this is the exact lever they would use.
     /// @notice Address responsible for blocking non compliant nominees
     address public nomineeVetter;
 
@@ -158,6 +194,11 @@ contract SecurityCouncilNomineeElectionGovernor is
         _;
     }
 
+    // SLIDE 03, Elected committee: Anyone can call this once the 6-month window opens.
+    // The election schedule is calculated deterministically from the election count, so
+    // no single party can delay or suppress it by simply not acting. The "elected" part
+    // of Slide 03's description depends on this being permissionless — if only the
+    // Foundation or the council could start elections, the rotation guarantee would break.
     /// @notice Creates a new nominee election proposal.
     ///         Can be called by anyone every 6 months.
     /// @return proposalId The id of the proposal
@@ -211,6 +252,12 @@ contract SecurityCouncilNomineeElectionGovernor is
         }
     }
 
+    // SLIDE 08, Key compromise honeypot: The EIP-712 signature requirement means only
+    // addresses that control a real private key can become candidates. A smart contract
+    // address or a multisig without a signing key cannot register. This is intentional.
+    // Council members need to be individuals who can sign transactions on their own. However,
+    // it is also exactly the attack surface Slide 08 describes: 12 known individuals each
+    // with a key that, if compromised, gives an attacker a seat on the council.
     /// @notice Put a contender up for nomination. Must be called before a contender can receive votes.
     /// @param  proposalId The id of the proposal
     /// @param  signature EIP712 `AddContenderMessage(uint256 proposalId)` signed by the contender

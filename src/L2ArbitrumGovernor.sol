@@ -1,6 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.16;
 
+/*
+ * ============================================================
+ * ANNOTATED IMPLEMENTATION WALKTHROUGH
+ * Presentation: "The Governance Handbrake" - Security Councils
+ * Slides 02, 04, and 08
+ * ============================================================
+ *
+ * This is the starting point of the standard DAO route from Slide 04. Token holders
+ * submit proposals here, vote on them during a set window, and if a proposal passes it
+ * gets sent to ArbitrumTimelock to wait out the mandatory delay before anyone can run it.
+ * The full pipeline is: propose, community vote, timelock queue, then execute.
+ *
+ * Slide 02 describes what goes wrong when this process is too slow. A proposal makes it
+ * through voting, the timelock starts, and then a bug is discovered. The only fix is
+ * another proposal and another wait. This contract is that bottleneck.
+ *
+ * Slide 08 describes two ways the governor itself can be attacked. The first is the flash
+ * loan governance attack, where someone borrows a huge amount of voting tokens in one block,
+ * pushes a proposal over quorum, then repays the loan before anyone can react. This
+ * contract defends against that through GovernorPreventLateQuorumUpgradeable, which extends
+ * the voting window if quorum is hit right at the deadline, giving the community time to
+ * respond. The second is plutocracy, where large token pools owned by the foundation or
+ * treasury inflate quorum requirements so high that real participants can never reach it.
+ * This contract handles that through EXCLUDE_ADDRESS, which removes those locked tokens
+ * from the quorum calculation entirely.
+ * ============================================================
+ */
+
 import "@openzeppelin/contracts-upgradeable/governance/GovernorUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorSettingsUpgradeable.sol";
 import
@@ -20,6 +48,15 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 /// @dev    Standard governor with some special functionality to avoid counting
 ///         votes of some excluded tokens. Also allows for an owner to set parameters by calling
 ///         relay.
+// SLIDE 04 + 08: Each extension in this inheritance list adds one piece of the governance
+// pipeline. GovernorSettingsUpgradeable sets the voting delay, voting period, and proposal
+// threshold. GovernorCountingSimpleUpgradeable handles the For/Against/Abstain tally.
+// GovernorVotesUpgradeable reads delegated ARB balances to determine voting power.
+// GovernorTimelockControlUpgradeable is what connects an approved proposal to the timelock
+// This is the actual "7-day wait" from Slide 04. GovernorVotesQuorumFractionUpgradeable
+// enforces a minimum percentage of circulating supply. And GovernorPreventLateQuorumUpgradeable
+// is the flash loan defense from Slide 08. It extends the voting window if quorum gets hit
+// at the very end so attackers cannot borrow, vote, and repay in a single block.
 contract L2ArbitrumGovernor is
     Initializable,
     GovernorSettingsUpgradeable,
@@ -30,6 +67,12 @@ contract L2ArbitrumGovernor is
     GovernorPreventLateQuorumUpgradeable,
     OwnableUpgradeable
 {
+    // SLIDE 08, Plutocracy: Tokens held by the treasury, the Arbitrum Foundation, and
+    // unclaimed airdrop pools are forced to delegate here. This address has no private key,
+    // so those tokens can never actually vote. More importantly, getPastCirculatingSupply()
+    // subtracts the votes at this address from the total supply, which means quorum is
+    // calculated only against tokens real people hold. Without this, locked institutional
+    // pools would push quorum so high that ordinary holders could never reach it.
     /// @notice address for which votes will not be counted toward quorum
     /// @dev    A portion of the Arbitrum tokens will be held by entities (eg the treasury) that
     ///         are not eligible to vote. However, even if their voting/delegation is restricted their
@@ -121,6 +164,11 @@ contract L2ArbitrumGovernor is
         return address(this);
     }
 
+    // SLIDE 02 + 08: This calculates the circulating supply that quorum is measured against.
+    // It subtracts the excluded tokens so the denominator only reflects tokens that real
+    // participants hold. The Compound incident from Slide 02 had a similar quorum setup,
+    // and low voter turnout in practice means getting that denominator right is what separates
+    // a governance system that works from one that a small whale can just dominate entirely.
     /// @notice Get "circulating" votes supply; i.e., total minus excluded vote exclude address.
     function getPastCirculatingSupply(uint256 blockNumber) public view virtual returns (uint256) {
         return

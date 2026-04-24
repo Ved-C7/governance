@@ -1,6 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.16;
 
+/*
+ * ============================================================
+ * ANNOTATED IMPLEMENTATION WALKTHROUGH
+ * Presentation: "The Governance Handbrake" - Security Councils
+ * Slide 03
+ * ============================================================
+ *
+ * The Gnosis Safe from Slide 03 stores its owners in a linked list on-chain. When an
+ * election finishes and SecurityCouncilManager records the new members, this action
+ * contract is what actually writes those changes into the Safe. It compares the current
+ * owner list against the desired one and adds or removes members until they match.
+ *
+ * It runs through the UpgradeExecutor's module authority, which means it can modify
+ * the Safe without collecting nine new signatures for the change. That module permission
+ * was set up when the council was first deployed and can only be removed by the Safe
+ * owners themselves, which requires nine signatures.
+ *
+ * The 9-of-12 threshold from Slide 03 is preserved automatically through every sync.
+ * Whenever a member is added or removed, the threshold stays at 9. No human has to
+ * remember to update it. The Safe enforces it as an invariant.
+ * ============================================================
+ */
+
 import "./interfaces/IGnosisSafe.sol";
 import "./SecurityCouncilMgmtUtils.sol";
 import "../gov-action-contracts/execution-record/ActionExecutionRecord.sol";
@@ -22,6 +45,13 @@ contract SecurityCouncilMemberSyncAction is ActionExecutionRecord {
         ActionExecutionRecord(_store, "SecurityCouncilMemberSyncAction")
     {}
 
+    // SLIDE 03: This is the function that actually changes who is in the Gnosis Safe. It gets
+    // the full desired member list from SecurityCouncilManager, compares it against who is
+    // currently in the Safe, and adds anyone missing or removes anyone who should not be there
+    // anymore. The nine-of-twelve threshold is preserved the entire time. The nonce check at
+    // the top prevents an old retryable ticket that expired and got re-queued from overwriting
+    // a more recent update. If the nonce is not higher than the last one recorded, the
+    // function returns early without making any changes.
     /// @notice Updates members of security council multisig to match provided array
     /// @dev    This function contains O(n^2) operations, so doesnt scale for large numbers of members. Expected count is 12, which is acceptable.
     ///         Gnosis OwnerManager handles reverting if address(0) is passed to remove/add owner
@@ -123,6 +153,12 @@ contract SecurityCouncilMemberSyncAction is ActionExecutionRecord {
         _set(uint160(securityCouncil), nonce);
     }
 
+    // SLIDE 03, Gnosis Safe module entry point: This is how the UpgradeExecutor modifies the
+    // Safe without needing nine signatures from the current council members. The Safe has a
+    // concept of trusted modules, which are contracts that are pre-authorized to call Safe
+    // functions on its behalf. The UpgradeExecutor was set as a module when the council was
+    // deployed. This means governance can update the member list through the election process
+    // without the existing council having to sign off on their own replacements every time.
     /// @notice Execute provided operation via gnosis safe's trusted execTransactionFromModule entry point
     function _execFromModule(IGnosisSafe securityCouncil, bytes memory data) internal {
         if (
